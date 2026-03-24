@@ -1,0 +1,67 @@
+receivers:
+  prometheus:
+    config:
+      scrape_configs:
+      - job_name: 'collector'
+        scrape_interval: 10s
+        static_configs:
+        - targets: ['0.0.0.0:8888']
+      - job_name: 'proxy'
+        scrape_interval: 10s
+        static_configs:
+        - targets: ['proxy:9091']
+      - job_name: 'avalanche'
+        scrape_interval: 10s
+        static_configs:
+        - targets: ['avalanche:9001']
+processors:
+  batch:
+    send_batch_max_size: 2000
+    send_batch_size: 1500
+    timeout: 1s
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+exporters:
+  debug: {}
+  prometheusremotewrite/clickhouse:
+    endpoint: http://clickhouse:9363/remote-write
+    auth:
+      authenticator: basicauth/clickhouse
+    resource_to_telemetry_conversion:
+      enabled: true
+    send_metadata: true
+    timeout: 60s
+    tls:
+      insecure_skip_verify: true
+    remote_write_queue:
+      queue_size: 100
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 0.0.0.0:1777
+  zpages:
+    endpoint: 0.0.0.0:55679
+  basicauth/clickhouse:
+    client_auth:
+      username: ingest
+      password: p@ssw0rd
+service:
+  extensions:
+    - health_check
+    - pprof
+    - zpages
+    - basicauth/clickhouse
+  pipelines:
+    metrics:
+      exporters:
+        - debug
+        - prometheusremotewrite/clickhouse
+      processors:
+        - memory_limiter
+        - batch
+      receivers:
+        - prometheus
+ 

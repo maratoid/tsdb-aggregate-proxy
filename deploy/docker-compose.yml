@@ -1,0 +1,124 @@
+volumes:
+  clickhouse_data:
+  clickhouse_logs:
+  prometheus_data:
+  grafana-data:
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    container_name: clickhouse
+    ports:
+      - "8123:8123" # ClickHouse HTTP
+      - "9000:9000" # ClickHouse TCP
+      - "9363:9363" # ClickHouse Prometheus handlers
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+      - ./clickhouse-config.xml:/etc/clickhouse-server/config.d/docker.xml
+      - ./clickhouse-users.xml:/etc/clickhouse-server/users.d/docker.xml
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    environment:
+      CLICKHOUSE_DB: default
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+    restart: unless-stopped
+
+  proxy:
+    image: ghcr.io/maratoid/tsdb-aggregate-proxy:1.0.0
+    depends_on:
+      - clickhouse
+    container_name: proxy
+    ports:
+      - "9091:9091" # Proxy listen port
+    command:
+      - --query-bypass
+      - --chi-url=clickhouse:9000
+      - --chi-password=p@ssw0rd
+      - --log-level=debug
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    depends_on:
+      - clickhouse
+      - proxy
+    container_name: prometheus
+    ports:
+      - "9090:9090" # Prometheus port
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --config.auto-reload-interval=10s
+      - --web.enable-lifecycle
+      - --web.listen-address=0.0.0.0:9090
+      - --web.read-timeout=10m
+      - --log.level=debug
+      - --storage.tsdb.no-lockfile
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=1m
+      - --storage.remote.read-sample-limit=0
+      - --storage.remote.read-concurrent-limit=0
+      - --query.timeout=10m
+    restart: unless-stopped
+
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.148.0
+    depends_on:
+      - clickhouse
+    container_name: collector
+    volumes:
+      - ./otel-config.yaml:/etc/otelcol-contrib/config.yaml
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+      - "13133:13133" # OTel Healthcheck
+      - "1777:1777" # OTel pprof
+      - "55679:55679" # OTel zpages
+    command:
+      - --config=/etc/otelcol-contrib/config.yaml
+    restart: unless-stopped
+
+  avalanche:
+    image: quay.io/prometheuscommunity/avalanche:latest
+    depends_on:
+      - collector
+    container_name: avalanche
+    ports:
+      - "9001:9001"
+    command:
+      - --gauge-metric-count=16
+      - --counter-metric-count=28
+      - --histogram-metric-count=2
+      - --histogram-metric-bucket-count=10
+      - --native-histogram-metric-count=0
+      - --summary-metric-count=5
+      - --summary-metric-objective-count=2
+      - --series-count=10
+      - --value-interval=10
+      - --series-interval=300
+      - --metric-interval=0
+      - --port=9001
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    depends_on:
+      - prometheus
+    container_name: grafana
+    user: root
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      # Default admin user/password
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
